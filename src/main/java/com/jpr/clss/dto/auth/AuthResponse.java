@@ -4,6 +4,8 @@ public record AuthResponse(
     String accessToken,
     String refreshToken,
     AuthUserResponse user,
-    boolean oauthEnabled
+    boolean oauthEnabled,
+    String activeTeamId,
+    String joinedTeamId
 ) {
 }

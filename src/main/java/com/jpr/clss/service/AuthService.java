@@ -35,6 +35,7 @@ import com.jpr.clss.repository.TeamMemberRepository;
 import com.jpr.clss.repository.TeamRepository;
 import com.jpr.clss.repository.UserRepository;
 import com.jpr.clss.security.JwtService;
+import com.jpr.clss.service.TeamService;
 
 @Service
 public class AuthService {
@@ -47,7 +48,8 @@ public class AuthService {
     private final RefreshTokenRepository refreshTokenRepository;
     private final JwtService jwtService;
     private final AuditService auditService;
-    private final EmailQueueService emailQueueService;
+    private final TeamService teamService;
+    private final EmailTemplateService emailTemplateService;
     private final ObjectProvider<ClientRegistrationRepository> clientRegistrationRepositoryProvider;
     private final long refreshTokenDays;
 
@@ -60,7 +62,8 @@ public class AuthService {
         RefreshTokenRepository refreshTokenRepository,
         JwtService jwtService,
         AuditService auditService,
-        EmailQueueService emailQueueService,
+        TeamService teamService,
+        EmailTemplateService emailTemplateService,
         ObjectProvider<ClientRegistrationRepository> clientRegistrationRepositoryProvider,
         @Value("${app.jwt.refresh-token-days}") long refreshTokenDays
     ) {
@@ -72,7 +75,8 @@ public class AuthService {
         this.refreshTokenRepository = refreshTokenRepository;
         this.jwtService = jwtService;
         this.auditService = auditService;
-        this.emailQueueService = emailQueueService;
+        this.teamService = teamService;
+        this.emailTemplateService = emailTemplateService;
         this.clientRegistrationRepositoryProvider = clientRegistrationRepositoryProvider;
         this.refreshTokenDays = refreshTokenDays;
     }
@@ -89,41 +93,49 @@ public class AuthService {
         user.setPasswordHash(passwordEncoder.encode(request.password()));
         user.setAuthProvider(AuthProvider.LOCAL);
         userRepository.save(user);
-
-        Team team = new Team();
-        team.setName(request.teamName().trim());
-        team.setSenderName(request.teamName().trim());
-        team.setOwner(user);
-        teamRepository.save(team);
-
-        TeamMember teamMember = new TeamMember();
-        teamMember.setTeam(team);
-        teamMember.setUser(user);
-        teamMember.setRole(TeamRole.OWNER);
-        teamMemberRepository.save(teamMember);
-
         auditService.log(user, "USER_REGISTERED", "USER", user.getId(), Map.of("email", user.getEmail()), ipAddress);
-        auditService.log(user, "TEAM_CREATED", "TEAM", team.getId(), Map.of("teamName", team.getName()), ipAddress);
-        emailQueueService.queue(
-            EmailType.BOOKING_LINK,
+
+        String teamName = (request.teamName() == null || request.teamName().isBlank() || request.teamName().equals("Invitation"))
+            ? user.getFullName() + "'s Team"
+            : request.teamName().trim();
+
+        Team defaultTeam = new Team();
+        defaultTeam.setName(teamName);
+        defaultTeam.setSenderName(teamName);
+        defaultTeam.setOwner(user);
+        teamRepository.save(defaultTeam);
+
+        TeamMember ownerMember = new TeamMember();
+        ownerMember.setTeam(defaultTeam);
+        ownerMember.setUser(user);
+        ownerMember.setRole(TeamRole.OWNER);
+        teamMemberRepository.save(ownerMember);
+
+        auditService.log(user, "TEAM_CREATED", "TEAM", defaultTeam.getId(), Map.of("teamName", defaultTeam.getName()), ipAddress);
+
+        String joinedTeamId = handleInvitation(user, request.inviteToken(), ipAddress);
+        emailTemplateService.queueWithTemplate(
+            EmailType.WELCOME,
+            defaultTeam,
             user.getEmail(),
-            team.getSenderName(),
-            "Welcome to Appointley",
-            "Your workspace for " + team.getName() + " is ready."
+            Map.of("userName", user.getFullName())
         );
 
-        return createAuthResponse(user);
+        return createAuthResponse(user, joinedTeamId != null ? joinedTeamId : defaultTeam.getId(), joinedTeamId);
     }
 
-    public AuthResponse login(LoginRequest request) {
+    @Transactional
+    public AuthResponse login(LoginRequest request, String ipAddress) {
         authenticationManager.authenticate(
             new UsernamePasswordAuthenticationToken(request.email().trim().toLowerCase(), request.password())
         );
-
-        User user = userRepository.findByEmailIgnoreCase(request.email())
+ 
+        User user = userRepository.findByEmailIgnoreCase(request.email().trim())
             .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "Invalid credentials"));
 
-        return createAuthResponse(user);
+        String joinedTeamId = handleInvitation(user, request.inviteToken(), ipAddress);
+
+        return createAuthResponse(user, joinedTeamId, joinedTeamId);
     }
 
     @Transactional
@@ -137,7 +149,7 @@ public class AuthService {
 
         refreshToken.setRevokedAt(Instant.now());
         User user = refreshToken.getUser();
-        return createAuthResponse(user);
+        return createAuthResponse(user, null, null);
     }
 
     @Transactional
@@ -157,7 +169,12 @@ public class AuthService {
         return new OAuthStatusResponse(configured, configured ? "/oauth2/authorization/google" : null);
     }
 
-    private AuthResponse createAuthResponse(User user) {
+    private String handleInvitation(User user, String token, String ipAddress) {
+        if (token == null || token.isBlank()) return null;
+        return teamService.processInvitationForUser(user, token, ipAddress);
+    }
+
+    private AuthResponse createAuthResponse(User user, String preferredTeamId, String joinedTeamId) {
         revokeActiveRefreshTokens(user);
         String refreshTokenValue = UUID.randomUUID() + "." + UUID.randomUUID();
 
@@ -167,11 +184,21 @@ public class AuthService {
         refreshToken.setExpiresAt(Instant.now().plus(refreshTokenDays, ChronoUnit.DAYS));
         refreshTokenRepository.save(refreshToken);
 
+        String activeTeamId = preferredTeamId;
+        if (activeTeamId == null) {
+            activeTeamId = teamMemberRepository.findByUserIdOrderByCreatedAtAsc(user.getId()).stream()
+                .findFirst()
+                .map(m -> m.getTeam().getId())
+                .orElse(null);
+        }
+
         return new AuthResponse(
             jwtService.generateAccessToken(user),
             refreshTokenValue,
             toUserResponse(user),
-            isGoogleConfigured()
+            isGoogleConfigured(),
+            activeTeamId,
+            joinedTeamId
         );
     }
 

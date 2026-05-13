@@ -3,11 +3,15 @@ package com.jpr.clss.service;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.UUID;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -31,6 +35,8 @@ import com.jpr.clss.repository.MeetingRepository;
 
 @Service
 public class AvailabilityService {
+
+    private static final DateTimeFormatter AVAILABILITY_TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm");
 
     private final AvailabilityRuleRepository availabilityRuleRepository;
     private final BlockedDateRepository blockedDateRepository;
@@ -62,14 +68,16 @@ public class AvailabilityService {
         availabilityRuleRepository.deleteByUserId(user.getId());
         List<AvailabilityRule> rules = new ArrayList<>();
         for (AvailabilityRuleRequest request : requests) {
-            if (!request.startTime().isBefore(request.endTime())) {
+            LocalTime startTime = parseAvailabilityTime(request.startTime(), "start");
+            LocalTime endTime = parseAvailabilityTime(request.endTime(), "end");
+            if (!startTime.isBefore(endTime)) {
                 throw new ApiException(HttpStatus.BAD_REQUEST, "Availability start time must be before end time");
             }
             AvailabilityRule rule = new AvailabilityRule();
             rule.setUser(user);
             rule.setDayOfWeek(request.dayOfWeek());
-            rule.setStartTime(request.startTime());
-            rule.setEndTime(request.endTime());
+            rule.setStartTime(startTime);
+            rule.setEndTime(endTime);
             rule.setSlotDurationMinutes(request.slotDurationMinutes());
             rule.setActive(request.active());
             rules.add(rule);
@@ -178,12 +186,25 @@ public class AvailabilityService {
         return new AvailabilityRuleResponse(
             rule.getId(),
             rule.getDayOfWeek(),
-            rule.getStartTime(),
-            rule.getEndTime(),
+            formatAvailabilityTime(rule.getStartTime()),
+            formatAvailabilityTime(rule.getEndTime()),
             rule.getSlotDurationMinutes(),
             rule.isActive()
         );
     }
+
+    private LocalTime parseAvailabilityTime(String value, String label) {
+        try {
+            return LocalTime.parse(value);
+        } catch (DateTimeParseException ex) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Availability " + label + " time must use HH:mm format");
+        }
+    }
+
+    private String formatAvailabilityTime(LocalTime value) {
+        return value.format(AVAILABILITY_TIME_FORMATTER);
+    }
+
 
     private BlockedDateResponse toBlockedDateResponse(BlockedDate blockedDate) {
         return new BlockedDateResponse(blockedDate.getId(), blockedDate.getStartsAt(), blockedDate.getEndsAt(), blockedDate.getReason());

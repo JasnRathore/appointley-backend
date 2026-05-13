@@ -49,6 +49,9 @@ public class BookingLink extends BaseEntity {
     @Column
     private String recipientEmail;
 
+    @Column
+    private Integer maxUsages;
+
     @Column(nullable = false)
-    private boolean oneTimeUse = false;
+    private int currentUsages = 0;
 }

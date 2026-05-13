@@ -11,6 +11,6 @@ public record BookingLinkRequest(
     @Min(15) @Max(240) Integer durationMinutes,
     @NotBlank String timezone,
     String recipientEmail,
-    boolean oneTimeUse
+    @Min(1) Integer maxUsages
 ) {
 }

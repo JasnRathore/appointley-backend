@@ -40,8 +40,8 @@ public class AuthController {
     }
 
     @PostMapping("/login")
-    public AuthResponse login(@Valid @RequestBody LoginRequest request) {
-        return authService.login(request);
+    public AuthResponse login(@Valid @RequestBody LoginRequest request, HttpServletRequest httpServletRequest) {
+        return authService.login(request, httpServletRequest.getRemoteAddr());
     }
 
     @PostMapping("/refresh")

@@ -13,6 +13,7 @@ public record BookingLinkResponse(
     String timezone,
     String bookingUrl,
     String recipientEmail,
-    boolean oneTimeUse
+    Integer maxUsages,
+    int currentUsages
 ) {
 }

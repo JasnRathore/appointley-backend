@@ -1,6 +1,7 @@
 package com.jpr.clss.entity;
 
 public enum EmailType {
+    WELCOME,
     TEAM_INVITE,
     MEETING_BOOKED_ORGANIZER,
     MEETING_BOOKED_CLIENT,

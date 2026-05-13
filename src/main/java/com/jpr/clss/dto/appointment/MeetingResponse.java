@@ -14,6 +14,7 @@ public record MeetingResponse(
     Instant endsAt,
     MeetingStatus status,
     String timezone,
-    String notes
+    String notes,
+    boolean manageable
 ) {
 }

@@ -84,24 +84,27 @@ public class BookingService {
         bookingLink.setDurationMinutes(request.durationMinutes() == null ? 30 : request.durationMinutes());
         bookingLink.setTimezone(request.timezone().trim());
         bookingLink.setRecipientEmail(request.recipientEmail());
-        bookingLink.setOneTimeUse(request.oneTimeUse());
+        bookingLink.setMaxUsages(request.maxUsages() != null ? request.maxUsages() : 1);
         bookingLinkRepository.save(bookingLink);
 
         String bookingUrl = frontendBaseUrl + "/book/" + bookingLink.getToken();
         auditService.log(user, "BOOKING_LINK_CREATED", "BOOKING_LINK", bookingLink.getId(), Map.of("token", bookingLink.getToken()), ipAddress);
         
         String targetEmail = bookingLink.getRecipientEmail() != null ? bookingLink.getRecipientEmail() : user.getEmail();
-        String emailMessage = bookingLink.getRecipientEmail() != null 
-            ? "You've been invited to book a meeting with " + user.getFullName() + ". Use this link: " + bookingUrl 
-            : "Share this link with clients: " + bookingUrl;
+        String emailMessage = bookingLink.getRecipientEmail() != null
+            ? "You've been invited to book a meeting with " + user.getFullName() + ".\n\nUse this link to choose a time:\n" + bookingUrl
+            : "Your booking link is ready.\n\nShare this link with clients:\n" + bookingUrl;
 
         emailTemplateService.queueWithTemplate(
             EmailType.BOOKING_LINK,
             team,
             targetEmail,
-            Map.of("organizerName", user.getFullName(), "bookingUrl", bookingUrl, "recipientEmail", bookingLink.getRecipientEmail() != null ? bookingLink.getRecipientEmail() : ""),
-            bookingLink.getRecipientEmail() != null ? "Meeting Invitation" : "Your booking link is ready",
-            emailMessage
+            Map.of(
+                "organizerName", user.getFullName(),
+                "bookingUrl", bookingUrl,
+                "recipientEmail", bookingLink.getRecipientEmail() != null ? bookingLink.getRecipientEmail() : "",
+                "bookingLinkMessage", emailMessage
+            )
         );
         return toBookingLinkResponse(bookingLink);
     }
@@ -143,10 +146,11 @@ public class BookingService {
         meeting.setStatus(MeetingStatus.SCHEDULED);
         meetingRepository.save(meeting);
 
-        if (bookingLink.isOneTimeUse()) {
+        bookingLink.setCurrentUsages(bookingLink.getCurrentUsages() + 1);
+        if (bookingLink.getMaxUsages() != null && bookingLink.getCurrentUsages() >= bookingLink.getMaxUsages()) {
             bookingLink.setActive(false);
-            bookingLinkRepository.save(bookingLink);
         }
+        bookingLinkRepository.save(bookingLink);
 
         auditService.log(bookingLink.getCreator(), "MEETING_BOOKED", "MEETING", meeting.getId(), Map.of("clientEmail", meeting.getClientEmail()), ipAddress);
         
@@ -165,7 +169,10 @@ public class BookingService {
             "clientEmail", meeting.getClientEmail(),
             "meetingTime", meeting.getStartsAt().toString(),
             "organizerName", bookingLink.getCreator().getFullName(),
-            "duration", String.valueOf(bookingLink.getDurationMinutes())
+            "duration", String.valueOf(bookingLink.getDurationMinutes()),
+            "manageBookingUrl", frontendBaseUrl + "/manage-booking/" + meeting.getId(),
+            "teamName", bookingLink.getTeam().getName(),
+            "senderName", bookingLink.getCreator().getFullName()
         );
 
         if (bookingLink.getCreator().isEmailOnBooking()) {
@@ -173,18 +180,14 @@ public class BookingService {
                 EmailType.MEETING_BOOKED_ORGANIZER,
                 bookingLink.getTeam(),
                 bookingLink.getCreator().getEmail(),
-                vars,
-                "New client meeting booked",
-                "A new meeting was booked by {{clientName}} for {{meetingTime}}"
+                vars
             );
         }
         emailTemplateService.queueWithTemplate(
             EmailType.MEETING_BOOKED_CLIENT,
             bookingLink.getTeam(),
             meeting.getClientEmail(),
-            vars,
-            "Booking confirmed",
-            "Your meeting is confirmed for {{meetingTime}}"
+            vars
         );
         return toMeetingResponse(meeting);
     }
@@ -215,6 +218,20 @@ public class BookingService {
             "Your meeting with " + meeting.getClientName() + " on " + meeting.getStartsAt() + " has been canceled.",
             "ALERT",
             "/meetings"
+        );
+
+        Map<String, String> vars = Map.of(
+            "clientName", meeting.getClientName(),
+            "clientEmail", meeting.getClientEmail(),
+            "meetingTime", meeting.getStartsAt().toString(),
+            "organizerName", meeting.getOrganizer().getFullName()
+        );
+
+        emailTemplateService.queueWithTemplate(
+            EmailType.MEETING_CANCELLED_CLIENT,
+            meeting.getBookingLink().getTeam(),
+            meeting.getClientEmail(),
+            vars
         );
         
         return toMeetingResponse(meeting);
@@ -262,9 +279,7 @@ public class BookingService {
             EmailType.MEETING_RESCHEDULED_CLIENT,
             bookingLink.getTeam(),
             meeting.getClientEmail(),
-            vars,
-            "Meeting Rescheduled",
-            "Your meeting has been rescheduled from {{oldMeetingTime}} to {{meetingTime}}"
+            vars
         );
 
         return toMeetingResponse(meeting);
@@ -291,7 +306,8 @@ public class BookingService {
             bookingLink.getTimezone(),
             frontendBaseUrl + "/book/" + bookingLink.getToken(),
             bookingLink.getRecipientEmail(),
-            bookingLink.isOneTimeUse()
+            bookingLink.getMaxUsages(),
+            bookingLink.getCurrentUsages()
         );
     }
 
@@ -306,8 +322,13 @@ public class BookingService {
             meeting.getEndsAt(),
             meeting.getStatus(),
             meeting.getTimezone(),
-            meeting.getNotes()
+            meeting.getNotes(),
+            isManageable(meeting)
         );
+    }
+
+    private boolean isManageable(Meeting meeting) {
+        return meeting.getStatus() == MeetingStatus.SCHEDULED && meeting.getStartsAt().isAfter(Instant.now());
     }
 
     @Transactional(readOnly = true)
@@ -322,8 +343,8 @@ public class BookingService {
         Meeting meeting = meetingRepository.findById(meetingId)
             .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Meeting not found"));
         
-        if (meeting.getStatus() == MeetingStatus.CANCELLED) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "Meeting is already cancelled");
+        if (!isManageable(meeting)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "This meeting can no longer be managed.");
         }
 
         meeting.setStatus(MeetingStatus.CANCELLED);
@@ -351,9 +372,7 @@ public class BookingService {
             EmailType.MEETING_CANCELLED_ORGANIZER,
             meeting.getBookingLink().getTeam(),
             meeting.getOrganizer().getEmail(),
-            vars,
-            "Meeting Canceled by Client",
-            "{{clientName}} has canceled their meeting scheduled for {{meetingTime}}"
+            vars
         );
 
         return toMeetingResponse(meeting);
@@ -363,6 +382,10 @@ public class BookingService {
     public MeetingResponse rescheduleMeetingPublic(String meetingId, RescheduleMeetingRequest request, String ipAddress) {
         Meeting meeting = meetingRepository.findById(meetingId)
             .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Meeting not found"));
+
+        if (!isManageable(meeting)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "This meeting can no longer be managed.");
+        }
 
         BookingLink bookingLink = meeting.getBookingLink();
         availabilityService.assertBookableSlot(bookingLink, request.newStartsAt());
@@ -396,9 +419,7 @@ public class BookingService {
             EmailType.MEETING_RESCHEDULED_ORGANIZER,
             bookingLink.getTeam(),
             meeting.getOrganizer().getEmail(),
-            vars,
-            "Meeting Rescheduled by Client",
-            "{{clientName}} has rescheduled their meeting from {{oldMeetingTime}} to {{meetingTime}}"
+            vars
         );
 
         return toMeetingResponse(meeting);

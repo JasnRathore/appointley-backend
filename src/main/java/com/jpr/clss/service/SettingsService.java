@@ -4,8 +4,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.jpr.clss.dto.auth.OAuthStatusResponse;
+import com.jpr.clss.dto.settings.EmailTemplateDto;
 import com.jpr.clss.dto.settings.SettingsResponse;
+import com.jpr.clss.dto.settings.UpdateEmailTemplateRequest;
 import com.jpr.clss.dto.settings.UpdateSettingsRequest;
+import com.jpr.clss.entity.EmailType;
 import com.jpr.clss.entity.Team;
 import com.jpr.clss.entity.User;
 
@@ -15,6 +18,7 @@ public class SettingsService {
     private final CurrentUserService currentUserService;
     private final TeamService teamService;
     private final AuthService authService;
+    private final EmailTemplateService emailTemplateService;
 
     private final com.jpr.clss.repository.AuditLogRepository auditLogRepository;
     private final com.jpr.clss.repository.NotificationRepository notificationRepository;
@@ -32,6 +36,7 @@ public class SettingsService {
         CurrentUserService currentUserService, 
         TeamService teamService, 
         AuthService authService,
+        EmailTemplateService emailTemplateService,
         com.jpr.clss.repository.AuditLogRepository auditLogRepository,
         com.jpr.clss.repository.NotificationRepository notificationRepository,
         com.jpr.clss.repository.RefreshTokenRepository refreshTokenRepository,
@@ -47,6 +52,7 @@ public class SettingsService {
         this.currentUserService = currentUserService;
         this.teamService = teamService;
         this.authService = authService;
+        this.emailTemplateService = emailTemplateService;
         this.auditLogRepository = auditLogRepository;
         this.notificationRepository = notificationRepository;
         this.refreshTokenRepository = refreshTokenRepository;
@@ -104,6 +110,27 @@ public class SettingsService {
             user.isWeeklyDigest(),
             user.isMarketingEmails()
         );
+    }
+
+    @Transactional(readOnly = true)
+    public java.util.List<EmailTemplateDto> getEmailTemplates() {
+        User user = currentUserService.requireCurrentUser();
+        Team team = teamService.getCurrentTeamOrThrow(user);
+        return emailTemplateService.getTemplatesForTeam(team);
+    }
+
+    @Transactional
+    public EmailTemplateDto updateEmailTemplate(EmailType type, UpdateEmailTemplateRequest request) {
+        User user = currentUserService.requireCurrentUser();
+        Team team = teamService.getCurrentTeamOrThrow(user);
+        return emailTemplateService.updateTemplate(team, type, request);
+    }
+
+    @Transactional
+    public void resetEmailTemplate(EmailType type) {
+        User user = currentUserService.requireCurrentUser();
+        Team team = teamService.getCurrentTeamOrThrow(user);
+        emailTemplateService.resetTemplate(team, type);
     }
 
     @Transactional
